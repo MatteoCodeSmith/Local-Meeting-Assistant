@@ -10,6 +10,15 @@ from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signa
 from .voice_database import normalized
 from .voice_jobs import PROJECT_ROOT, VoiceJobs
 
+# Known voices only. A single live window against an enrolled centre scores lower than
+# group centres in archive analysis (~0.5-0.7 for the same speaker), so 0.80 almost never
+# named anyone. Short windows are noisier: they need a clearer match.
+LIVE_MATCH_THRESHOLD, LIVE_SHORT_THRESHOLD, LIVE_MARGIN, SHORT_SECONDS = 0.60, 0.70, 0.08, 1.5
+
+
+def live_threshold(seconds):
+    return LIVE_SHORT_THRESHOLD if seconds < SHORT_SECONDS else LIVE_MATCH_THRESHOLD
+
 
 class LiveVoices(QObject):
     status = Signal(bool, str)
@@ -122,7 +131,7 @@ class LiveVoices(QObject):
         changed = []
         for turn in turns:
             vector = normalized(turn["embedding"])
-            match = self.database.match(vector)
+            match = self.database.match(vector, live_threshold(turn["end"] - turn["start"]), LIVE_MARGIN)
             if match:
                 key = "Profilo " + match["id"]
                 data["names"][key] = match["name"]

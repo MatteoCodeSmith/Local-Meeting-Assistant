@@ -39,6 +39,7 @@ if (Test-Path -LiteralPath $outputDir) {
     New-Item -ItemType Directory -Path $outputDir | Out-Null
 }
 $target = Join-Path $outputDir ('bionic-source-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '.zip')
+Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [IO.Compression.ZipFile]::Open($target, [IO.Compression.ZipArchiveMode]::Create)
 try {

@@ -10,7 +10,8 @@ def main():
     parser.add_argument("--directory", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--threshold", type=float, default=0.7)
+    parser.add_argument("--threshold", type=float, default=0.55)
+    parser.add_argument("--options", default="{}")
     parser.add_argument("--expected", type=int, default=0)
     args = parser.parse_args()
     if os.name == "nt":
@@ -28,7 +29,10 @@ def main():
     socket.create_connection = offline
     try:
         from .voice_engine import analyse
+        from .voice_corrections import VoiceErrorDatabase
         result = analyse(args.directory, args.checkpoint, threshold=args.threshold, expected=args.expected,
+                         options=json.loads(args.options),
+                         exclusions=VoiceErrorDatabase.for_session(args.directory).list(args.directory),
                          progress=lambda value: print(json.dumps({"progress": value}), flush=True))
         temp = args.output.with_suffix(".tmp")
         temp.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")

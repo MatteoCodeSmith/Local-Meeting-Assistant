@@ -99,3 +99,23 @@ def test_voice_capture_callback_failure_does_not_escape():
     capture.callbacks.on_voice_audio.side_effect = RuntimeError("optional voice failure")
     capture._send_voice_audio([np.zeros((16000, 1), dtype=np.float32)], 0, np)
     capture.callbacks.on_voice_audio.assert_called_once()
+
+
+def test_live_names_realistic_known_voice_matches_but_not_short_or_unknown_windows(tmp_path):
+    repo = SessionRepository(tmp_path / "archive")
+    record = repo.create(SessionSource.MANUAL)
+    database = VoiceDatabase(tmp_path / "profiles.sqlite3")
+    database.enroll("Persona Demo", basis(0))
+    live = LiveVoices(repo, database)
+    live.begin(record)
+    entry = live.sessions[record.session_id]
+    similar = 0.65 * basis(0) + np.sqrt(1 - 0.65 ** 2) * basis(1)  # Same voice, noisy window.
+    live._apply(entry, "mic", [{"start": 0, "end": 3, "embedding": similar.tolist()}])
+    live._apply(entry, "mic", [{"start": 3, "end": 4, "embedding": similar.tolist()}])
+    live._apply(entry, "system", [{"start": 0, "end": 3, "embedding": basis(2).tolist()}])
+    turns = entry["data"]["turns"]
+    assert entry["data"]["names"].get(turns[0]["speaker"]) == "Persona Demo"
+    assert turns[1]["speaker"] not in entry["data"]["names"]  # 1 s window: needs 0.70.
+    assert turns[2]["speaker"] not in entry["data"]["names"]
+    assert len(database.list_profiles()[0]["vectors"]) == 1
+    live.close()

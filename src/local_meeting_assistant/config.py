@@ -49,6 +49,8 @@ class AppConfig:
     whisper_compute_type: str = "int8_float16"
     transcription_language: str = "auto"
     lm_base_url: str = "http://127.0.0.1:1234/v1"
+    auto_start_lmstudio: bool = True
+    lms_executable: str = ""
     lm_model: str = "google/gemma-3-4b"
     lm_timeout_seconds: int = 180
     lm_context_length: int = 16_384

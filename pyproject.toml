@@ -28,7 +28,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<9", "ruff>=0.9,<1"]
+dev = ["pytest>=8,<9", "ruff>=0.9,<1", "scipy>=1.12,<2"]
 
 [project.scripts]
 meeting-assistant = "local_meeting_assistant.__main__:main"

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import sqlite3
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -213,7 +215,7 @@ class AssistantController(QObject):
     def generate_recap(self, record: SessionRecord) -> bool:
         return self._queue_archive_job(record, recap_only=True)
 
-    def analyse_voices(self, record, expected=0, threshold=0.7):
+    def analyse_voices(self, record, expected=0, threshold=0.55, options=None):
         with self._lock:
             if self._current is not None or self._processing or self.is_session_busy(record):
                 self.message.emit("Attendi la fine della registrazione o elaborazione. Whisper ha priorità.")
@@ -223,8 +225,8 @@ class AssistantController(QObject):
                 if not any((record.directory / f"{track}.flac").is_file() for track in ("mic", "system")):
                     raise ValueError("Audio originale non disponibile.")
                 self._processing.add(record.session_id)
-                self.voices.start(record, expected, threshold)
-            except (OSError, ValueError) as exc:
+                self.voices.start(record, expected, threshold, options)
+            except (OSError, ValueError, RuntimeError, TypeError) as exc:
                 self._processing.discard(record.session_id)
                 self.error.emit(str(exc))
                 return False
@@ -241,11 +243,63 @@ class AssistantController(QObject):
         self.message.emit("Nomi vocali applicati. Il recap resta invariato: rigeneralo solo se lo desideri.")
         return counts
 
+    def correct_voice_intervals(self, record, spans=None, reason="Altro non parlato", restore_id=None):
+        with self._lock:
+            if self._current is not None or self.is_session_busy(record):
+                raise ValueError("Attendi la fine della registrazione o dell'analisi.")
+            self.repository._editable_archive_record(record)
+            from .voice_corrections import VoiceErrorDatabase
+            from .voices import load_analysis, apply_voice_names
+            database = VoiceErrorDatabase.for_session(record.directory)
+            # Validate ranges against audio metadata only, never read speech here.
+            if restore_id is None:
+                import soundfile as sf
+                for span in spans or []:
+                    if span.get("track") not in ("mic", "system"):
+                        raise ValueError("Traccia non valida.")
+                    if float(span["end"]) > sf.info(record.directory / f"{span['track']}.flac").duration + 0.001:
+                        raise ValueError("L'intervallo supera la durata dell'audio.")
+                database.add(record.directory, spans, reason)
+            else:
+                database.restore(record.directory, restore_id)
+            data = load_analysis(record.directory)
+            if data:
+                apply_voice_names(record, data.get("names", {}), self.repository, confirm=False)
+        self.voices_finished.emit(record.session_id)
+        self.message.emit("Blacklist aggiornata: testo e audio conservati. Rianalizza per ricalcolare i gruppi.")
+
     def _on_voices_finished(self, record, detail):
+        named = 0
+        if not detail:
+            try:
+                named = self._apply_known_voices(record)
+            except (OSError, ValueError, KeyError, sqlite3.Error):
+                LOGGER.warning("Voice book matching skipped")
+                detail = "Voci analizzate; confronto con la rubrica non riuscito. Assegna i nomi a mano."
+        if named and not detail:
+            detail = (f"Voci analizzate: {named} riconosciute dalla rubrica e assegnate automaticamente. "
+                      "Verificale in Analizza voci.")
         self._processing.discard(record.session_id)
         self.ai_changed.emit(bool(self._processing), "Analisi voci terminata")
         self.message.emit(detail or "Voci analizzate: apri Analizza voci nell'archivio per ascoltarle e assegnare i nomi.")
         self.voices_finished.emit(record.session_id)
+
+    def _apply_known_voices(self, record) -> int:
+        """Names enrolled voices right after the user-started analysis; never enrols."""
+        database = getattr(self, "voice_database", None)
+        path = record.directory / "voices.json"
+        if database is None or not path.exists():
+            return 0
+        data = json.loads(path.read_text(encoding="utf-8"))
+        options = data.get("options", {})
+        if not options.get("use_profiles", True) or data.get("profiles_resolved"):
+            return 0
+        from .voices import apply_voice_names, resolve_known_voices
+        resolve_known_voices(data, database, float(options.get("profile_threshold", 0.55)))
+        self.repository._write_json(path, data)
+        if data["names"]:
+            apply_voice_names(record, data["names"], self.repository, confirm=False)
+        return len(data["names"])
 
     def is_session_busy(self, record: SessionRecord) -> bool:
         with self._lock:

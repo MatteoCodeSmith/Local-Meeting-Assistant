@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
 )
 
 from .config import AppConfig
+from .window_policy import DesktopDialog, present_window
 from .controller import AssistantController
 from .domain import SessionRecord, SessionStatus
 from .summarizer import LMStudioSummarizer, LMStudioError
@@ -215,7 +216,7 @@ class StatusLamp(QWidget):
             self.text.setText(text)
 
 
-class ArchiveDialog(QDialog):
+class ArchiveDialog(DesktopDialog):
     """Browse saved sessions and rerun either the whole pipeline or only Gemma."""
 
     def __init__(self, controller: AssistantController, parent: QWidget | None = None) -> None:
@@ -482,6 +483,8 @@ class OverlayWindow(QWidget):
         self._phase = 0.0
         self._ai_phase = 0.0
         self._appearance_dialog = None
+        self._recognition_dialog = None
+        self._participant_dialogs = []
         self._drag_position: QPoint | None = None
         self._dragging = False
         self._expanded = True
@@ -496,7 +499,7 @@ class OverlayWindow(QWidget):
         self.setWindowTitle("Local Meeting Assistant")
         self.setWindowIcon(make_tray_icon())
         self.setWindowFlags(
-            Qt.WindowType.Tool
+            Qt.WindowType.Window
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
         )
@@ -846,9 +849,7 @@ class OverlayWindow(QWidget):
             from .live_transcript_ui import LiveTranscriptDialog
             self._live_dialog = LiveTranscriptDialog(self.controller, self)
         self._live_dialog.setStyleSheet(dialog_css(self.panel_style))
-        self._live_dialog.show()
-        self._live_dialog.raise_()
-        self._live_dialog.activateWindow()
+        present_window(self._live_dialog)
 
     def _confirm_cancel(self) -> None:
         answer = QMessageBox.question(
@@ -867,22 +868,24 @@ class OverlayWindow(QWidget):
         else:
             self._archive_dialog.refresh()
         self._archive_dialog.setStyleSheet(dialog_css(self.panel_style))
-        self._archive_dialog.show()
-        self._archive_dialog.raise_()
-        self._archive_dialog.activateWindow()
+        present_window(self._archive_dialog)
 
     def show_appearance(self) -> None:
         if self._appearance_dialog is None:
             self._appearance_dialog = AppearanceDialog(self)
         self._appearance_dialog.sync_selection()
-        self._appearance_dialog.show()
-        self._appearance_dialog.raise_()
-        self._appearance_dialog.activateWindow()
+        present_window(self._appearance_dialog)
 
     def show_recognition(self) -> None:
-        dialog = RecognitionDialog(self.controller, self.config, self)
-        dialog.setStyleSheet(dialog_css(self.panel_style))
-        dialog.exec()
+        if self._recognition_dialog is None:
+            self._recognition_dialog = RecognitionDialog(self.controller, self.config, self)
+            self._recognition_dialog.finished.connect(self._release_recognition)
+        self._recognition_dialog.setStyleSheet(dialog_css(self.panel_style))
+        present_window(self._recognition_dialog)
+
+    def _release_recognition(self, _result):
+        self._recognition_dialog.deleteLater()
+        self._recognition_dialog = None
 
     def show_participants(self):
         record = self.controller.current_session
@@ -893,10 +896,15 @@ class OverlayWindow(QWidget):
             return
         dialog = ParticipantsDialog(self.controller, record, self)
         dialog.setStyleSheet(dialog_css(self.panel_style))
-        dialog.exec()
+        self._participant_dialogs.append(dialog)
+        def release(_result):
+            self._participant_dialogs.remove(dialog)
+            dialog.deleteLater()
+        dialog.finished.connect(release)
+        present_window(dialog)
 
 
-class ParticipantsDialog(QDialog):
+class ParticipantsDialog(DesktopDialog):
     def __init__(self, controller, record, parent=None):
         super().__init__(parent)
         self.controller, self.record = controller, record
@@ -971,7 +979,7 @@ class ParticipantsDialog(QDialog):
             QMessageBox.warning(self, "Nomi non salvati", str(exc))
 
 
-class RecapHistoryDialog(QDialog):
+class RecapHistoryDialog(DesktopDialog):
     """List metadata and open user-selected files; no AI evaluation or text preview."""
 
     def __init__(self, repository, record, parent=None):
@@ -1021,7 +1029,7 @@ class RecapHistoryDialog(QDialog):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.versions[row]["path"])))
 
 
-class RecapDialog(QDialog):
+class RecapDialog(DesktopDialog):
     """Explicit LLM selection and confirmation, never loads an AI model on opening."""
 
     def __init__(self, config, parent=None):
@@ -1165,7 +1173,7 @@ class RecapDialog(QDialog):
         self.accept()
 
 
-class RecognitionDialog(QDialog):
+class RecognitionDialog(DesktopDialog):
     def __init__(self, controller, config, parent=None):
         super().__init__(parent)
         self.controller = controller
@@ -1276,7 +1284,7 @@ class PreviewController(QObject):
         pass
 
 
-class AppearanceDialog(QDialog):
+class AppearanceDialog(DesktopDialog):
     def __init__(self, overlay: OverlayWindow):
         super().__init__(overlay)
         self.overlay = overlay
@@ -1513,6 +1521,9 @@ class TrayController(QSystemTrayIcon):
         self.controller = controller
         self.overlay = overlay
         self.config = config
+        self._voice_database_dialog = None
+        from .lm_startup import LMStudioStartup
+        self.lm_startup = LMStudioStartup(config, self)
         menu = QMenu()
         menu.addAction("Mostra controllo", self._show_overlay)
         menu.addAction("Archivio registrazioni", overlay.show_archive)
@@ -1522,6 +1533,15 @@ class TrayController(QSystemTrayIcon):
         menu.addAction("Impostazioni · Aspetto", overlay.show_appearance)
         menu.addAction("Impostazioni · Trascrizione e nomi Teams", overlay.show_recognition)
         menu.addAction("Partecipanti · Registrazione corrente", overlay.show_participants)
+        menu.addSeparator()
+        self.lm_auto_action = menu.addAction("Avvia LM Studio insieme a BIONIC")
+        self.lm_auto_action.setCheckable(True)
+        self.lm_auto_action.setChecked(config.auto_start_lmstudio)
+        self.lm_auto_action.toggled.connect(self._set_lm_autostart)
+        menu.addAction("Avvia / riprova server LM Studio", self.lm_startup.start)
+        self.lm_status_action = menu.addAction(self.lm_startup.status)
+        self.lm_status_action.setEnabled(False)
+        self.lm_startup.status_changed.connect(self.lm_status_action.setText)
         menu.addSeparator()
         self.record_action = menu.addAction("Avvia registrazione", controller.start_manual)
         self.stop_action = menu.addAction("Stop e trascrivi", controller.stop_and_process)
@@ -1543,6 +1563,18 @@ class TrayController(QSystemTrayIcon):
         controller.error.connect(self._error)
         overlay.appearance_changed.connect(self._appearance_changed)
 
+    def _set_lm_autostart(self, enabled):
+        previous = self.config.auto_start_lmstudio
+        self.config.auto_start_lmstudio = enabled
+        try:
+            self.config.save()
+        except OSError:
+            self.config.auto_start_lmstudio = previous
+            self.lm_auto_action.blockSignals(True)
+            self.lm_auto_action.setChecked(previous)
+            self.lm_auto_action.blockSignals(False)
+            self._error("Impossibile salvare l'impostazione di avvio LM Studio.")
+
     def _appearance_changed(self, key):
         self.setIcon(
             make_tray_icon(
@@ -1554,11 +1586,18 @@ class TrayController(QSystemTrayIcon):
 
     def _show_voice_database(self):
         from .voice_ui import VoiceDatabaseDialog
+        if self._voice_database_dialog is not None:
+            present_window(self._voice_database_dialog)
+            return
         dialog = VoiceDatabaseDialog(self.controller.voice_database, self.overlay)
+        self._voice_database_dialog = dialog
         dialog.setStyleSheet(dialog_css(panel_style(self.overlay.style,
                                       self.config.icon_colors.get(self.overlay.style.key))))
-        dialog.exec()
-        dialog.deleteLater()
+        def release(_result):
+            self._voice_database_dialog = None
+            dialog.deleteLater()
+        dialog.finished.connect(release)
+        present_window(dialog)
 
     @Slot(bool, str)
     def _recording_changed(self, active: bool, source: str) -> None:
@@ -1599,9 +1638,7 @@ class TrayController(QSystemTrayIcon):
         self.overlay._confirm_cancel()
 
     def _show_overlay(self) -> None:
-        self.overlay.show()
-        self.overlay.raise_()
-        self.overlay.activateWindow()
+        present_window(self.overlay)
 
     @Slot(QSystemTrayIcon.ActivationReason)
     def _activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:

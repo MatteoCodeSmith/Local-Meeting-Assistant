@@ -2,9 +2,10 @@
 from PySide6.QtWidgets import QDialog, QLabel, QTableWidget, QTableWidgetItem, QVBoxLayout, QHeaderView, QPushButton, QAbstractItemView
 
 from .participants import segment_key
+from .window_policy import DesktopDialog
 
 
-class LiveTranscriptDialog(QDialog):
+class LiveTranscriptDialog(DesktopDialog):
     def __init__(self, controller, parent=None):
         super().__init__(parent)
         self.controller = controller

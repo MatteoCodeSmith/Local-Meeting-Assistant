@@ -30,7 +30,7 @@ class VoiceJobs(QObject):
     def available(cls):
         return all(path.is_file() for path in cls.paths())
 
-    def start(self, record, expected=0, threshold=0.7):
+    def start(self, record, expected=0, threshold=0.55, options=None):
         if self._process is not None:
             raise ValueError("Analisi vocale già in corso.")
         if not self.available():
@@ -59,7 +59,8 @@ class VoiceJobs(QObject):
                                      if error == QProcess.ProcessError.FailedToStart else None)
         process.start(str(python), ["-m", "local_meeting_assistant.voice_worker", "--directory", str(record.directory),
                                    "--checkpoint", str(checkpoint), "--output", str(output),
-                                   "--expected", str(expected), "--threshold", str(threshold)])
+                                   "--expected", str(expected), "--threshold", str(threshold),
+                                   "--options", json.dumps(options or {})])
 
     def _read(self, process, session_id):
         self._buffer += bytes(process.readAllStandardOutput())

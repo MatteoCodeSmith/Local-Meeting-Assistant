@@ -54,12 +54,15 @@ def main() -> int:
     overlay.place_top_right()
     overlay.show()
     tray.show()
+    if config.auto_start_lmstudio:
+        QTimer.singleShot(0, tray.lm_startup.start)
     if "--appearance" in sys.argv:
         overlay.show_appearance()
     if "--recognition" in sys.argv:
         QTimer.singleShot(0, overlay.show_recognition)
 
     def shutdown() -> None:
+        tray.lm_startup.stop()
         controller.shutdown()
         lock.unlock()
 

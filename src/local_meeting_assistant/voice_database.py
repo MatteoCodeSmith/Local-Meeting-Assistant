@@ -60,16 +60,36 @@ class VoiceDatabase:
         with self._connect() as db:
             db.execute("DELETE FROM profiles WHERE id=?", (identity,))
 
-    def match(self, vector, threshold=0.80, margin=0.08):
+    def rank(self, vector, profiles=None):
+        """All compatible profiles by cosine similarity, best first. Metadata, not identity."""
         vector = normalized(vector)
-        candidates = []
-        for profile in self.list_profiles():
+        ranked = []
+        for profile in self.list_profiles() if profiles is None else profiles:
             if profile["engine"] != ENGINE:
                 continue
             score = max(float(np.dot(vector, normalized(item))) for item in profile["vectors"])
-            candidates.append((score, profile))
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        if (not candidates or candidates[0][0] < threshold
-                or (len(candidates) > 1 and candidates[0][0] - candidates[1][0] < margin)):
+            ranked.append({"id": profile["id"], "name": profile["name"], "score": score})
+        return sorted(ranked, key=lambda item: item["score"], reverse=True)
+
+    # Defaults are the Live behaviour, kept unchanged. Archive analysis passes its own,
+    # lower thresholds: ECAPA same-speaker cosine between group centres is ~0.5-0.8.
+    def match(self, vector, threshold=0.80, margin=0.08, profiles=None):
+        ranked = self.rank(vector, profiles)
+        if (not ranked or ranked[0]["score"] < threshold
+                or (len(ranked) > 1 and ranked[0]["score"] - ranked[1]["score"] < margin)):
             return None
-        return {"id": candidates[0][1]["id"], "name": candidates[0][1]["name"], "score": candidates[0][0]}
+        return ranked[0]
+
+    def match_group(self, group, threshold=0.55, margin=0.05, profiles=None):
+        """Group centre against profiles; no sample may point to a competing profile."""
+        if group.get("needs_reanalysis") or not group.get("embedding"):
+            return None
+        profiles = self.list_profiles() if profiles is None else profiles
+        match = self.match(group["embedding"], threshold, margin, profiles)
+        if not match:
+            return None
+        for vector in group.get("reference_vectors") or []:
+            competing = self.match(vector, threshold - 0.1, 0.0, profiles)
+            if competing and competing["id"] != match["id"]:
+                return None
+        return match
